@@ -1,0 +1,7 @@
+sentence-transformers
+torch
+tiktoken
+markitdown
+python-docx
+pymupdf
+numpy
