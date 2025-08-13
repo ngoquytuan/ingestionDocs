@@ -479,4 +479,91 @@ if __name__ == "__main__":
 ---
 
 Nếu bạn muốn, tôi có thể **viết thêm script import JSON này vào FAISS** để pipeline của bạn hoàn thiện từ ingestion → search → Ollama.  
- Bạn có muốn tôi làm luôn không?
+Mình nghĩ cách bạn đang làm bây giờ – JSON chứa cả nội dung (text) lẫn embedding – có ưu nhược điểm rõ ràng.
+
+---
+
+## 1. Thuận tiện khi lưu sang FAISS
+
+Điểm mạnh:
+
+- Khi import vào FAISS, bạn không cần tính lại embedding → tiết kiệm thời gian và GPU.
+- Có thể import rất nhanh chỉ bằng:
+
+  ```python
+  import numpy as np, faiss, json
+  with open("doc.json") as f:
+      data = json.load(f)
+  vecs = np.array([c["embedding"] for c in data["chunks"]], dtype="float32")
+  index = faiss.IndexFlatIP(vecs.shape[1])
+  index.add(vecs)
+  ```
+- Nếu sau này đổi sang FAISS IVF/HNSW hoặc chuyển qua vector DB khác (Chroma, Weaviate, Milvus…), vẫn dùng cùng file JSON mà không phải chạy lại pipeline ingestion.
+
+---
+
+## 2. Quản lý khi thêm/bớt tài liệu
+
+### Thêm tài liệu
+
+- Rất dễ: ingest tài liệu mới → tạo JSON mới → đọc JSON, .add() vào FAISS.
+- Không ảnh hưởng đến các tài liệu cũ vì mỗi file JSON độc lập.
+
+### Xóa tài liệu
+
+- FAISS thuần không có “delete” mềm. Nếu muốn xóa:
+  1. Bạn phải ghi nhớ mapping giữa vector ID trong FAISS và document_id + chunk_id.
+  2. Khi xóa → rebuild index từ các JSON còn lại.
+- Nếu dùng vector DB (Milvus, Weaviate, Qdrant, Chroma) thì có thể xóa theo document_id dễ hơn.
+
+---
+
+## 3. Quản lý và mở rộng
+
+- Ưu: JSON tự mô tả (self-contained) → ai cầm file cũng có text + vector.
+- Nhược: JSON to hơn nhiều, vì embedding float32 (768 chiều) cho mỗi chunk → mỗi chunk \~3KB. Với 10.000 chunks, file sẽ \~30MB.
+- Có thể giảm dung lượng bằng:
+  - Lưu embedding dưới dạng float16 (\~1.5KB/chunk).
+  - Hoặc nén toàn bộ file JSON khi lưu (.json.gz).
+
+---
+
+## 4. Đề xuất mô hình lưu trữ
+
+Mình thấy tốt nhất là:
+
+```
+data/
+ ├─ ingested_json/
+ │   ├─ DOC001.json   # text + metadata + embedding
+ │   ├─ DOC002.json
+ ├─ faiss_index/      # index.faiss + mapping.json
+```
+
+- mapping.json sẽ chứa:
+
+  ```json
+  [
+    {"vector_id": 0, "document_id": "DOC001", "chunk_id": "DOC001-000"},
+    ...
+  ]
+  ```
+- Khi import FAISS, đọc từng JSON → add embedding → ghi mapping.
+- Khi cần rebuild, chỉ duyệt qua JSON trong ingested_json/.
+
+---
+
+## 5. Khi nào nên tách embedding ra khỏi JSON
+
+- Nếu tài liệu gốc thay đổi nhiều, và bạn muốn embedding luôn được tính lại theo model mới → lưu embedding riêng để dễ replace.
+- Nếu dung lượng là vấn đề lớn → lưu text + metadata trong JSON, embedding ở file .npy hoặc .bin riêng.
+
+---
+
+Nếu bạn muốn, mình có thể làm script import JSON → FAISS kèm mapping.json, hỗ trợ:
+
+- Thêm tài liệu
+- Xóa tài liệu (bằng cách rebuild index từ JSON còn lại)
+- Tùy chọn float16 để tiết kiệm dung lượng
+
+Bạn có muốn mình viết luôn phần này không? Như vậy pipeline ingest → FAISS của bạn sẽ trọn gói.
